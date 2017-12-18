@@ -151,6 +151,9 @@ public class MainActivity extends AppCompatActivity
             case R.id.nav_transformer:
                 Utils.comeOnBaby(this, TransformerActivity.class);
                 break;
+            case R.id.nav_architecture:
+                Utils.comeOnBaby(this, ArchitectureActivity.class);
+                break;
 
             default:
                 break;
