@@ -1,0 +1,279 @@
+websokcet 说明
+
+
+您查询的关键词是：socketpingpong 以下是该网页在北京时间 2017年12月13日 09:41:01 的快照；
+如果打开速度慢，可以尝试快速版；如果想更新或删除快照，可以投诉快照。
+
+百度和网页 http://blog.csdn.net/ttdevs/article/details/62887058 的作者无关，不对其内容负责。百度快照谨为网络故障时之索引，不代表被搜索网站的即时页面。
+
+百度一下
+使用Websocket实现消息推送（心跳）
+原创 2017年03月17日 14:02:05
+标签：
+websocket /
+8527
+编辑
+删除
+0x00 心跳
+本来以为写完了，结果最近和一个同事在讨论心跳的事情，这里再做一个补充。先说我的结论：
+
+WebSocket协议已经设计了心跳，这个功能可以到达检测链接是否可用
+心跳是用来检测链接是否可用的，不一定支持携带数据，可要看具体实现
+如果非要心跳中带上复杂数据，那这个可作为应用层的一个功能自己去实现。
+心跳逻辑
+
+0x01 WebSocket协议的控制帧
+上一篇的最后简单提到了心跳，下面是对websocket协议控制帧的描述：
+
+5.5.  Control Frames
+
+   Control frames are identified by opcodes where the most significant
+   bit of the opcode is 1.  Currently defined opcodes for control frames
+   include 0x8 (Close), 0x9 (Ping), and 0xA (Pong).  Opcodes 0xB-0xF are
+   reserved for further control frames yet to be defined.
+
+   Control frames are used to communicate state about the WebSocket.
+   Control frames can be interjected in the middle of a fragmented
+   message.
+
+   All control frames MUST have a payload length of 125 bytes or less
+   and MUST NOT be fragmented.
+Ping的协议头是0x9，Pong的协议头是0xA
+控制帧最大载荷为125bytes且不能拆分
+0x02 WebSocket协议的心跳
+下面再来看看对心跳的规定：
+
+5.5.2.  Ping
+
+   The Ping frame contains an opcode of 0x9.
+
+   A Ping frame MAY include "Application data".
+   // 注：Ping帧中可能会携带数据
+
+   Upon receipt of a Ping frame, an endpoint MUST send a Pong frame in
+   response, unless it already received a Close frame.  It SHOULD
+   respond with Pong frame as soon as is practical.  Pong frames are
+   discussed in Section 5.5.3.
+   // 注：在收到Ping帧后，端点必须发送Pong帧响应，除非已经收到了Close帧。在实际中应尽可能快的响应。
+
+   An endpoint MAY send a Ping frame any time after the connection is
+   established and before the connection is closed.
+
+   NOTE: A Ping frame may serve either as a keepalive or as a means to
+   verify that the remote endpoint is still responsive.
+
+5.5.3.  Pong
+
+   The Pong frame contains an opcode of 0xA.
+
+   Section 5.5.2 details requirements that apply to both Ping and Pong
+   frames.
+
+   A Pong frame sent in response to a Ping frame must have identical
+   "Application data" as found in the message body of the Ping frame
+   being replied to.
+   // 注：在响应Ping帧的的Pong帧中，必须携和被响应的Ping帧中相同的数据。
+
+   If an endpoint receives a Ping frame and has not yet sent Pong
+   frame(s) in response to previous Ping frame(s), the endpoint MAY
+   elect to send a Pong frame for only the most recently processed Ping
+   frame.
+从上面的描述我们可以得到如下结论：
+
+心跳包中可能会携带数据
+当收到Ping帧的时候需要立即返回一个Pong帧
+在连接建立之后，随时都可以发送Ping帧
+心跳是用来测试链接是否存在和对方是否在线
+在响应Ping帧的的Pong帧中，必须携和被响应的Ping帧中相同的数据
+0x03 测试
+和之前一样，自己本地搭建的服务器，用的库是 org.java_websocket。 
+在其源码中我们可以找到这样一段：
+
+package org.java_websocket;
+
+public abstract class WebSocketAdapter implements WebSocketListener {
+    ...
+
+    public void onWebsocketPing(WebSocket conn, Framedata f) {
+        FramedataImpl1 resp = new FramedataImpl1(f);
+        resp.setOptcode(Opcode.PONG);
+        conn.sendFrame(resp);
+    }
+
+    public void onWebsocketPong(WebSocket conn, Framedata f) {
+    }
+
+    ...
+}
+客户端也可以使用这个库，相同的逻辑，代码也是这一份。
+
+然后我们再换一个库，com.squareup.okhttp3:okhttp-ws:3.4.2，他的实现如下：
+
+
+package okhttp3.internal.ws;
+
+public abstract class RealWebSocket implements WebSocket {
+  ...
+  public RealWebSocket(boolean isClient, BufferedSource source, BufferedSink sink, Random random,
+      final Executor replyExecutor, final WebSocketListener listener, final String url) {
+    this.listener = listener;
+
+    writer = new WebSocketWriter(isClient, sink, random);
+    reader = new WebSocketReader(isClient, source, new FrameCallback() {
+      @Override public void onMessage(ResponseBody message) throws IOException {
+        listener.onMessage(message);
+      }
+
+      @Override public void onPing(final Buffer buffer) {
+        replyExecutor.execute(new NamedRunnable("OkHttp %s WebSocket Pong Reply", url) {
+          @Override protected void execute() {
+            try {
+              writer.writePong(buffer);
+            } catch (IOException ignored) {
+            }
+          }
+        });
+      }
+
+      @Override public void onPong(Buffer buffer) {
+        listener.onPong(buffer);
+      }
+
+      @Override public void onClose(final int code, final String reason) {
+        readerSentClose = true;
+        replyExecutor.execute(new NamedRunnable("OkHttp %s WebSocket Close Reply", url) {
+          @Override protected void execute() {
+            peerClose(code, reason);
+          }
+        });
+      }
+    });
+  }
+...
+}
+在处理Ping帧的时候，也是将协议字段改为Pong然后返回。
+
+对心跳的测试代码已经上传到Github：ttdevs 
+WebSocketActivity.java 
+WebSocketOKActivity.java 
+SocketServer.java
+
+在实际的测试中，可能会遇到一些异常，比如在我们自己的生产环境：当客户端发送带了简单数据的Ping帧后，服务器立马返回Pong帧，但是它会将携带的数据丢弃。这个就是服务端的问题了。
+
+参考：
+RFC6455: https://datatracker.ietf.org/doc/rfc6455/
+
+阅读全文
+版权声明：本文为博主原创文章，未经博主允许不得转载。
+本文已收录于以下专栏：
+相关文章推荐
+websocket心跳的实现（包括全部代码）
+本文主要讲的是如果设计websocket心跳已经需要考虑哪些问题。前言在使用websocket的过程中，有时候会遇到客户端网络关闭的情况，而这时候在服务端并没有触发onclose事件。这样会： 多余的...
+Real_Bird
+Real_Bird
+2017年08月12日 16:35
+3159
+WebSocket心跳机制和代码
+本文主要讲的是如果设计websocket心跳已经需要考虑哪些问题。 前言 在使用websocket的过程中，有时候会遇到客户端网络关闭的情况，而这时候在服务端并没有触发onclose事件。这样会：...
+k469785635
+k469785635
+2017年11月03日 09:48
+270
+websocket 心跳连接
+websocket连接时，如果长时间没有进行数据的通讯就会自动断开连接。为了不让其断开就在要断开的时候自动发送数据进行通讯，就产生了心跳连接的效果。 具体的操作就是在客户端建立连接的时候开启发送心跳...
+jiangyou4
+jiangyou4
+2016年12月12日 19:58
+1802
+互联网推送服务原理：长连接+心跳机制(MQTT协议)
+互联网推送消息的方式很常见，特别是移动互联网上，手机每天都能收到好多推送消息，经过研究发现，这些推送服务的原理都是维护一个长连接（要不不可能达到实时效果），但普通的socket连接对服务器的消耗太大了...
+u013378580
+u013378580
+2016年07月23日 15:56
+4437
+初探和实现websocket心跳重连
+心跳重连缘由 在使用websocket过程中，可能会出现网络断开的情况，比如信不好，或者网络临时性关闭，这时候websocket的连接已经断开， 而浏览器不会执行websocket 的 onclo...
+qq_36290329
+qq_36290329
+2016年10月02日 17:31
+2390
+websocket心跳的实现（转载）
+版权声明：本文为博主原创文章，未经博主允许不得转载。 目录(?)[+] 本文主要讲的是如果设计websocket心跳已经需要考虑哪些问题。 前言 在使用...
+imLWY
+imLWY
+2017年09月13日 21:08
+178
+websocket 心跳包重连
+摘要 websocket heartbeat 上次我们讲过了websocket断线重连的问题，那么久会有人提出疑问了，心跳包重连跟断线重连有什么区别呢？�0�2 其实这两个都是为了达到一个目的，那就是...
+LANGZI7758521
+LANGZI7758521
+2016年07月14日 11:34
+3391
+使用Websocket实现消息推送（心跳）
+使用Websocket实现消息推送（心跳） 标签：�0�2websocket 2017-03-17 14:02�0�2224人阅读�0�2评论(0)�0�2收藏�0�2举报 �0�2分类： websocket（2）�0�2 ...
+w690333243
+w690333243
+2017年03月30日 17:18
+3172
+WebSocket 是什么原理？为什么可以实现持久连接？
+WebSocket 是什么原理？为什么可以实现持久连接？ WebSocket是HTML5出的东西 也就是说HTTP协议没有变化 但HTTP是不支持持久连接的（长连接，循环连接的不算） 或者...
+JIESA
+JIESA
+2016年02月22日 18:37
+4286
+Android最佳实践——深入浅出WebSocket协议
+WebSocket协议是一种建立在TCP连接基础上的全双工通信的协议。全双工就是指客户端和服务端可以同时进行双向通信，强调同时、双向通信。WebSocket可以应用于即时通信等场景，比如现在直播很火热...
+sbsujjbcy
+sbsujjbcy
+2016年10月17日 22:25
+15813
+ 
+ttdevs
+＋关注
+原创
+87
+粉丝
+352
+喜欢
+0
+码云
+ 
+他的最新文章
+更多文章
+Nexus3配合Gradle搭建私有仓库
+ThreadLocal
+TextWatcher中的参数
+相关推荐
+websocket心跳的实现（包括全部代码）
+WebSocket心跳机制和代码
+websocket 心跳连接
+互联网推送服务原理：长连接+心跳机制(MQTT协议)
+他的热门文章
+使用Websocket实现消息推送（上）
+17805
+Retrofit初探——POST方式提交JSON数据
+10106
+android 滚轮刻度尺的实现
+8757
+使用VideoView和MediaController进行视频播放
+8684
+使用Websocket实现消息推送（心跳）
+8335
+ 0
+
+  
+
+
+
+内容举报
+返回顶部
+收藏助手
+
+不良信息举报
+您举报文章：使用Websocket实现消息推送（心跳）
+举报原因：	色情  政治  抄袭  广告  招聘  骂人 
+其他
+原因补充：	
+(最多只允许输入30个字)
+
+提交提交  
